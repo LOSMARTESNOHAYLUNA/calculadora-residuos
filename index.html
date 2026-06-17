@@ -73,6 +73,11 @@ function App() {
   const [pesoTN, setPesoTN] = useState(1);
   const [docAnual, setDocAnual] = useState(false);
 
+  // Datos del cliente que solicita la oferta
+  const [cliNombre, setCliNombre] = useState('');
+  const [cliNif, setCliNif] = useState('');
+  const [cliContacto, setCliCont] = useState('');
+
   // Asistente: ¿el cliente entrega en envases NO homologados (bidones, garrafas...)?
   // Si SÍ -> hay que suministrarle GRGs homologados + cobrar el trasvase. Ambos automáticos.
   const [noHomologado, setNoHom] = useState(false);
@@ -119,6 +124,11 @@ function App() {
   }]);
   const delLinea = i => setLineas(ls => ls.length > 1 ? ls.filter((_, j) => j !== i) : ls);
   const descargarPDF = () => {
+    if (!cliNombre.trim()) {
+      alert('Por favor, indica el nombre de la empresa gestora en el apartado "Datos del gestor" antes de descargar la oferta.');
+      document.getElementById('cli-nombre')?.focus();
+      return;
+    }
     const {
       jsPDF
     } = window.jspdf;
@@ -140,7 +150,26 @@ function App() {
     d.setTextColor(160, 170, 185);
     d.setFontSize(8);
     d.text('Presupuesto sujeto a validación · ' + new Date().toLocaleDateString('es-ES'), 14, 29);
-    y = 44;
+    y = 42;
+    // Recuadro con los datos del cliente que solicita la oferta
+    d.setFillColor(240, 245, 243);
+    d.setDrawColor(210, 220, 216);
+    d.roundedRect(14, y, 182, 18, 2, 2, 'FD');
+    d.setFontSize(7.5);
+    d.setFont('helvetica', 'bold');
+    d.setTextColor(120, 130, 145);
+    d.text('OFERTA SOLICITADA POR (GESTOR)', 18, y + 5);
+    d.setFontSize(11);
+    d.setTextColor(11, 18, 32);
+    d.text(cliNombre || '(sin especificar)', 18, y + 12);
+    d.setFontSize(8);
+    d.setFont('helvetica', 'normal');
+    d.setTextColor(90, 100, 115);
+    const datosDer = [cliNif && 'NIF/CIF: ' + cliNif, cliContacto && 'Contacto: ' + cliContacto].filter(Boolean).join('    ');
+    if (datosDer) d.text(datosDer, 192, y + 12, {
+      align: 'right'
+    });
+    y += 26;
     d.setTextColor(11, 18, 32);
     d.setFont('helvetica', 'bold');
     d.setFontSize(11);
@@ -247,7 +276,9 @@ function App() {
     d.text('incineradora aplica subidas de tarifa no previstas. Envíe esta oferta a ' + T.emailValidacion, 14, y);
     y += 4;
     d.text('para su validación. Es obligatorio el uso de envases GRG (IBC) homologados UN:31HA1.', 14, y);
-    d.save('oferta-mac-pasta.pdf');
+    const slug = (cliNombre || 'cliente').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '').slice(0, 40);
+    const f = new Date().toISOString().slice(0, 10);
+    d.save(`oferta-mac-${slug}-${f}.pdf`);
   };
   return /*#__PURE__*/React.createElement("div", {
     style: {
@@ -276,10 +307,51 @@ function App() {
       borderRadius: 10,
       background: 'var(--mac-green)',
       display: 'grid',
-      placeItems: 'center',
-      fontSize: 20
+      placeItems: 'center'
     }
-  }, "🗑️"), /*#__PURE__*/React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("svg", {
+    width: "28",
+    height: "28",
+    viewBox: "0 0 32 32",
+    fill: "none",
+    xmlns: "http://www.w3.org/2000/svg"
+  }, /*#__PURE__*/React.createElement("rect", {
+    x: "14.8",
+    y: "20",
+    width: "2.4",
+    height: "8",
+    rx: "1",
+    fill: "#ffffff"
+  }), /*#__PURE__*/React.createElement("circle", {
+    cx: "16",
+    cy: "13",
+    r: "10",
+    fill: "#ffffff"
+  }), /*#__PURE__*/React.createElement("g", {
+    stroke: "#2d8659",
+    strokeWidth: "1.6",
+    strokeLinecap: "round",
+    strokeLinejoin: "round",
+    fill: "none"
+  }, /*#__PURE__*/React.createElement("path", {
+    d: "M16 8.2l2.4 4.1-2.4 0"
+  }), /*#__PURE__*/React.createElement("path", {
+    d: "M12.4 14.5l-2.4-1.5 2.0-3.4"
+  }), /*#__PURE__*/React.createElement("path", {
+    d: "M19.6 14.5l2.4-1.5-2.0-3.4"
+  }), /*#__PURE__*/React.createElement("path", {
+    d: "M13.0 14.6l-1.0 3.8 4.2 0"
+  }), /*#__PURE__*/React.createElement("path", {
+    d: "M19.0 14.6l1.0 3.8-4.2 0"
+  })), /*#__PURE__*/React.createElement("g", {
+    fill: "#2d8659"
+  }, /*#__PURE__*/React.createElement("path", {
+    d: "M16 7.4l1.5 2-3 0z"
+  }), /*#__PURE__*/React.createElement("path", {
+    d: "M10.3 16.6l-0.4-2.5 2.3 1.2z"
+  }), /*#__PURE__*/React.createElement("path", {
+    d: "M21.7 16.6l0.4-2.5-2.3 1.2z"
+  })))), /*#__PURE__*/React.createElement("div", {
     style: {
       fontFamily: 'Space Grotesk',
       fontWeight: 700,
@@ -349,6 +421,68 @@ function App() {
       lineHeight: 1.5
     }
   }, "Es estrictamente ", /*#__PURE__*/React.createElement("b", null, "obligatorio"), " el uso de envases GRG (IBC) homologados. La planta de tratamiento final rechazará cualquier residuo no conforme con la normativa de seguridad."))), /*#__PURE__*/React.createElement(Card, null, /*#__PURE__*/React.createElement(Head, {
+    icon: "🏢",
+    title: "DATOS DEL GESTOR"
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12.5,
+      color: '#475569',
+      lineHeight: 1.5,
+      marginBottom: 14
+    }
+  }, "Indícanos los datos de tu empresa para que sepamos de parte de qué gestor llega la solicitud de oferta."), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: 'grid',
+      gridTemplateColumns: '1fr',
+      gap: 12
+    },
+    className: "cli"
+  }, /*#__PURE__*/React.createElement("style", null, `@media(min-width:640px){.cli{grid-template-columns:2fr 1fr !important}}`), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      fontWeight: 700,
+      color: '#94a3b8',
+      marginBottom: 4
+    }
+  }, "EMPRESA GESTORA ", /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: '#dc2626'
+    }
+  }, "*")), /*#__PURE__*/React.createElement("input", {
+    id: "cli-nombre",
+    value: cliNombre,
+    onChange: e => setCliNombre(e.target.value),
+    placeholder: "Ej: Gestión Ambiental del Norte S.L.",
+    style: inp
+  })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      fontWeight: 700,
+      color: '#94a3b8',
+      marginBottom: 4
+    }
+  }, "NIF / CIF"), /*#__PURE__*/React.createElement("input", {
+    value: cliNif,
+    onChange: e => setCliNif(e.target.value),
+    placeholder: "B12345678",
+    style: inp
+  }))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 12
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      fontWeight: 700,
+      color: '#94a3b8',
+      marginBottom: 4
+    }
+  }, "EMAIL O TELÉFONO DE CONTACTO"), /*#__PURE__*/React.createElement("input", {
+    value: cliContacto,
+    onChange: e => setCliCont(e.target.value),
+    placeholder: "correo@ejemplo.com / 600 000 000",
+    style: inp
+  }))), /*#__PURE__*/React.createElement(Card, null, /*#__PURE__*/React.createElement(Head, {
     icon: "⚡",
     title: "¿CÓMO ENTREGAS TUS RESIDUOS?"
   }), /*#__PURE__*/React.createElement("div", {
@@ -1053,7 +1187,7 @@ function App() {
       marginTop: 14
     }
   }, "✉️ Enviar esta oferta a ", /*#__PURE__*/React.createElement("a", {
-    href: 'mailto:' + T.emailValidacion,
+    href: `mailto:${T.emailValidacion}?subject=${encodeURIComponent('Solicitud de oferta — ' + (cliNombre || '(sin nombre)') + (cliNif ? ' (' + cliNif + ')' : ''))}`,
     style: {
       color: 'var(--mac-green-light)',
       fontWeight: 700
