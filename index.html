@@ -1,0 +1,1257 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MEDIOAMBIENTE CASTRO SLU — Gestor de Residuos Peligrosos</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;600;700&display=swap');
+  :root{
+    --mac-green:#2d8659; --mac-green-light:#34d399; --mac-blue:#0e7490;
+    --ink:#0b1220; --ink-soft:#1a2332; --panel:#0d1626;
+    --bg:#eef2f1; --card:#ffffff; --line:#e2e8e6;
+    --muted:#64748b; --amber:#f59e0b; --red:#dc2626;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:'Manrope',system-ui,sans-serif;background:var(--bg);color:var(--ink);-webkit-font-smoothing:antialiased}
+  .mono{font-family:'Space Grotesk',monospace;font-variant-numeric:tabular-nums}
+  input[type=number]::-webkit-outer-spin-button,input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
+  input[type=number]{-moz-appearance:textfield}
+  input[type=range]{-webkit-appearance:none;appearance:none;height:6px;border-radius:99px;background:#cbd5d1;outline:none}
+  input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:22px;height:22px;border-radius:50%;background:var(--mac-green);cursor:pointer;border:3px solid #fff;box-shadow:0 2px 8px rgba(45,134,89,.4)}
+  input[type=range]::-moz-range-thumb{width:22px;height:22px;border-radius:50%;background:var(--mac-green);cursor:pointer;border:3px solid #fff}
+  .switch{position:relative;width:52px;height:28px;border-radius:99px;background:#cbd5d1;cursor:pointer;transition:.25s;flex-shrink:0}
+  .switch.on{background:var(--mac-green)}
+  .switch .knob{position:absolute;top:3px;left:3px;width:22px;height:22px;border-radius:50%;background:#fff;transition:.25s;box-shadow:0 1px 4px rgba(0,0,0,.2)}
+  .switch.on .knob{left:27px}
+  @media print{.no-print{display:none}}
+  .fade-in{animation:fi .4s ease}
+  @keyframes fi{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+const {
+  useState,
+  useMemo
+} = React;
+
+/* ===================== TARIFAS (EDITAR AQUÍ) ===================== */
+const T = {
+  tratamiento: 1887.5,
+  // €/TN  - IVA 10%
+  logistica: 98,
+  // €/TN  - IVA 10%
+  trasvase: 390,
+  // €/TN  - IVA 10% (tramos 0,5 TN, redondeo al alza)
+  documentacion: 350,
+  // €     - IVA 10% (anual / 1ª entrega del año)
+  grg: 78,
+  // €/ud  - IVA 21% (venta de bien)
+  grgCapacidadTN: 1.3,
+  // TN que admite 1 GRG (densidad 1,3 kg/L)
+  ivaServicios: 0.10,
+  ivaGrg: 0.21,
+  trasvaseTramo: 0.5,
+  emailValidacion: 'info@medioambientecastro.es'
+};
+/* ================================================================ */
+
+const eur = n => n.toLocaleString('es-ES', {
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2
+}) + ' €';
+const num = n => n.toLocaleString('es-ES', {
+  minimumFractionDigits: 0,
+  maximumFractionDigits: 3
+});
+function App() {
+  const [pesoTN, setPesoTN] = useState(1);
+  const [docAnual, setDocAnual] = useState(false);
+
+  // Asistente: ¿el cliente entrega en envases NO homologados (bidones, garrafas...)?
+  // Si SÍ -> hay que suministrarle GRGs homologados + cobrar el trasvase. Ambos automáticos.
+  const [noHomologado, setNoHom] = useState(false);
+  const [lineas, setLineas] = useState([{
+    cant: 1,
+    envase: 'Bidones',
+    kg: 200
+  }]);
+  const pesoAsist = useMemo(() => lineas.reduce((s, l) => s + (Number(l.cant) || 0) * (Number(l.kg) || 0), 0) / 1000, [lineas]);
+  const totalEnvases = useMemo(() => lineas.reduce((s, l) => s + (Number(l.cant) || 0), 0), [lineas]);
+
+  // El asistente manda el peso en tiempo real cuando está activo y hay carga.
+  const asistMandaPeso = noHomologado && pesoAsist > 0;
+  const pesoTNef = asistMandaPeso ? pesoAsist : pesoTN;
+
+  // GRGs a suministrar: 1 GRG por cada 1,3 TN (redondeo al alza). Solo si entrega no homologado.
+  const grgUds = noHomologado ? Math.ceil(pesoTNef / T.grgCapacidadTN) || 0 : 0;
+
+  // Trasvase: solo si entrega no homologado. Tramos de 0,5 TN al alza × 390 €/TN.
+  const tramosTrasvase = noHomologado ? Math.ceil(pesoTNef / T.trasvaseTramo) * T.trasvaseTramo : 0;
+
+  // ---- BASES IMPONIBLES ----
+  const baseTratamiento = pesoTNef * T.tratamiento;
+  const baseLogistica = pesoTNef * T.logistica;
+  const baseTrasvase = tramosTrasvase * T.trasvase; // 0 si homologado
+  const baseDoc = docAnual ? T.documentacion : 0;
+  const baseGrg = grgUds * T.grg; // 0 si homologado
+
+  const baseServicios = baseTratamiento + baseLogistica + baseTrasvase + baseDoc; // IVA 10%
+  const baseGrgTotal = baseGrg; // IVA 21%
+  const baseTotal = baseServicios + baseGrgTotal;
+  const ivaServ = baseServicios * T.ivaServicios;
+  const ivaGrg = baseGrgTotal * T.ivaGrg;
+  const ivaTotal = ivaServ + ivaGrg;
+  const totalConIva = baseTotal + ivaTotal;
+  const setLinea = (i, k, v) => setLineas(ls => ls.map((l, j) => j === i ? {
+    ...l,
+    [k]: v
+  } : l));
+  const addLinea = () => setLineas(ls => [...ls, {
+    cant: 1,
+    envase: 'Bidones',
+    kg: 0
+  }]);
+  const delLinea = i => setLineas(ls => ls.length > 1 ? ls.filter((_, j) => j !== i) : ls);
+  const descargarPDF = () => {
+    const {
+      jsPDF
+    } = window.jspdf;
+    const d = new jsPDF({
+      unit: 'mm',
+      format: 'a4'
+    });
+    const W = 210;
+    let y = 20;
+    d.setFillColor(13, 22, 38);
+    d.rect(0, 0, W, 32, 'F');
+    d.setTextColor(255, 255, 255);
+    d.setFont('helvetica', 'bold');
+    d.setFontSize(16);
+    d.text('MEDIOAMBIENTE CASTRO', 14, 16);
+    d.setTextColor(52, 211, 153);
+    d.setFontSize(9);
+    d.text('GESTOR DE RESIDUOS PELIGROSOS · OFERTA ESTIMADA', 14, 23);
+    d.setTextColor(160, 170, 185);
+    d.setFontSize(8);
+    d.text('Presupuesto sujeto a validación · ' + new Date().toLocaleDateString('es-ES'), 14, 29);
+    y = 44;
+    d.setTextColor(11, 18, 32);
+    d.setFont('helvetica', 'bold');
+    d.setFontSize(11);
+    d.text('GESTIÓN DE PASTA — Detalle de la oferta', 14, y);
+    y += 8;
+    // cada fila lleva su tipo de IVA visible (badge a la derecha del concepto)
+    const row = (label, detalle, imp, iva) => {
+      d.setFont('helvetica', 'normal');
+      d.setFontSize(9);
+      d.setTextColor(40, 50, 65);
+      d.text(label, 14, y);
+      // badge IVA
+      const tag = iva + '% IVA';
+      const tw = d.getTextWidth(tag) + 4;
+      const lw = d.getTextWidth(label);
+      if (iva === 21) {
+        d.setFillColor(254, 243, 199);
+      } else {
+        d.setFillColor(220, 242, 233);
+      }
+      d.roundedRect(14 + lw + 3, y - 3.2, tw, 4.8, 1, 1, 'F');
+      d.setFontSize(6.5);
+      d.setFont('helvetica', 'bold');
+      d.setTextColor(iva === 21 ? 180 : 6, iva === 21 ? 83 : 95, iva === 21 ? 9 : 70);
+      d.text(tag, 14 + lw + 5, y + 0.3);
+      // detalle y precio
+      d.setFont('helvetica', 'normal');
+      d.setTextColor(120, 130, 145);
+      d.setFontSize(8);
+      d.text(detalle, 14, y + 4);
+      d.setTextColor(11, 18, 32);
+      d.setFont('helvetica', 'bold');
+      d.setFontSize(9);
+      d.text(eur(imp), 196, y, {
+        align: 'right'
+      });
+      y += 11;
+      d.setDrawColor(230, 233, 231);
+      d.line(14, y - 3, 196, y - 3);
+    };
+    row('Tratamiento de residuo', `${num(pesoTNef)} TN × ${eur(T.tratamiento)}/TN`, baseTratamiento, 10);
+    row('Logística a planta', `${num(pesoTNef)} TN × ${eur(T.logistica)}/TN`, baseLogistica, 10);
+    if (noHomologado && baseTrasvase > 0) row('Trasvase a GRG', `${num(tramosTrasvase)} TN × ${eur(T.trasvase)}/TN (tramos 0,5 TN)`, baseTrasvase, 10);
+    if (noHomologado && baseGrg > 0) row('Suministro GRG homologado UN:31HA1', `${grgUds} ud × ${eur(T.grg)}`, baseGrg, 21);
+    if (docAnual) row('Documentación anual obligatoria', '1ª entrega del año', baseDoc, 10);
+    y += 2;
+    // Desglose de IVA separando claramente 10% y 21%
+    d.setFontSize(9);
+    d.setTextColor(80, 90, 105);
+    d.setFont('helvetica', 'normal');
+    d.text('Base imponible al 10% (tratamiento, logística, trasvase, doc.)', 14, y);
+    d.text(eur(baseServicios), 196, y, {
+      align: 'right'
+    });
+    y += 5.5;
+    d.setTextColor(120, 130, 145);
+    d.setFontSize(8);
+    d.text('   IVA 10%', 14, y);
+    d.text('+ ' + eur(ivaServ), 196, y, {
+      align: 'right'
+    });
+    y += 7;
+    if (baseGrgTotal > 0) {
+      d.setTextColor(80, 90, 105);
+      d.setFontSize(9);
+      d.text('Base imponible al 21% (suministro GRG)', 14, y);
+      d.text(eur(baseGrgTotal), 196, y, {
+        align: 'right'
+      });
+      y += 5.5;
+      d.setTextColor(120, 130, 145);
+      d.setFontSize(8);
+      d.text('   IVA 21%', 14, y);
+      d.text('+ ' + eur(ivaGrg), 196, y, {
+        align: 'right'
+      });
+      y += 7;
+    }
+    d.setDrawColor(210, 215, 213);
+    d.line(120, y - 2, 196, y - 2);
+    d.setTextColor(40, 50, 65);
+    d.setFontSize(9);
+    d.setFont('helvetica', 'bold');
+    d.text('Cuota IVA total', 14, y + 2);
+    d.text(eur(ivaTotal), 196, y + 2, {
+      align: 'right'
+    });
+    y += 10;
+    d.setFillColor(45, 134, 89);
+    d.rect(14, y - 4, 182, 12, 'F');
+    d.setTextColor(255, 255, 255);
+    d.setFont('helvetica', 'bold');
+    d.setFontSize(11);
+    d.text('TOTAL OFERTA (IVA INCL.)', 18, y + 4);
+    d.text(eur(totalConIva), 192, y + 4, {
+      align: 'right'
+    });
+    y += 18;
+    d.setTextColor(120, 130, 145);
+    d.setFont('helvetica', 'normal');
+    d.setFontSize(7.5);
+    d.text('Presupuesto estimado sujeto a validación final. El precio puede variar si la planta', 14, y);
+    y += 4;
+    d.text('incineradora aplica subidas de tarifa no previstas. Envíe esta oferta a ' + T.emailValidacion, 14, y);
+    y += 4;
+    d.text('para su validación. Es obligatorio el uso de envases GRG (IBC) homologados UN:31HA1.', 14, y);
+    d.save('oferta-mac-pasta.pdf');
+  };
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      minHeight: '100vh'
+    }
+  }, /*#__PURE__*/React.createElement("header", {
+    style: {
+      background: 'var(--panel)',
+      padding: '18px 24px',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      flexWrap: 'wrap',
+      gap: 12
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: 'flex',
+      alignItems: 'center',
+      gap: 14
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      width: 42,
+      height: 42,
+      borderRadius: 10,
+      background: 'var(--mac-green)',
+      display: 'grid',
+      placeItems: 'center',
+      fontSize: 20
+    }
+  }, "🗑️"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontFamily: 'Space Grotesk',
+      fontWeight: 700,
+      fontSize: 19,
+      letterSpacing: .5,
+      color: '#fff'
+    }
+  }, "MEDIOAMBIENTE ", /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: 'var(--mac-green-light)'
+    }
+  }, "CASTRO"))), /*#__PURE__*/React.createElement("div", {
+    className: "mono",
+    style: {
+      color: 'var(--mac-green-light)',
+      fontSize: 12,
+      letterSpacing: 2,
+      fontWeight: 600
+    }
+  }, "GESTOR DE RESIDUOS PELIGROSOS")), /*#__PURE__*/React.createElement("main", {
+    style: {
+      maxWidth: 1180,
+      margin: '0 auto',
+      padding: '28px 20px',
+      display: 'grid',
+      gridTemplateColumns: '1fr',
+      gap: 20
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: 'grid',
+      gridTemplateColumns: 'minmax(0,1fr)',
+      gap: 20
+    },
+    className: "layout"
+  }, /*#__PURE__*/React.createElement("style", null, `@media(min-width:980px){.layout{grid-template-columns:1fr 360px !important}}`), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: 'flex',
+      flexDirection: 'column',
+      gap: 18
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: '#fffbeb',
+      border: '1px solid #fde68a',
+      borderRadius: 14,
+      padding: '16px 18px',
+      display: 'flex',
+      gap: 14
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 22
+    }
+  }, "⚠️"), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontWeight: 800,
+      fontSize: 13,
+      letterSpacing: .5,
+      color: '#92400e',
+      marginBottom: 4
+    }
+  }, "AVISO DE CUMPLIMIENTO OBLIGATORIO"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      color: '#78350f',
+      lineHeight: 1.5
+    }
+  }, "Es estrictamente ", /*#__PURE__*/React.createElement("b", null, "obligatorio"), " el uso de envases GRG (IBC) homologados. La planta de tratamiento final rechazará cualquier residuo no conforme con la normativa de seguridad."))), /*#__PURE__*/React.createElement(Card, null, /*#__PURE__*/React.createElement(Head, {
+    icon: "⚡",
+    title: "¿CÓMO ENTREGAS TUS RESIDUOS?"
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      color: '#475569',
+      lineHeight: 1.5,
+      marginBottom: 14
+    }
+  }, "La planta final solo acepta GRG ", /*#__PURE__*/React.createElement("b", null, "UN:31HA1"), " homologado. Si entregas en bidones u otros envases no homologados, te suministramos los GRG necesarios y trasvasamos tu residuo (ambos se calculan abajo automáticamente)."), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: 'grid',
+      gridTemplateColumns: '1fr 1fr',
+      gap: 10,
+      marginBottom: noHomologado ? 16 : 0
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: () => setNoHom(false),
+    style: {
+      textAlign: 'left',
+      padding: '14px',
+      borderRadius: 12,
+      cursor: 'pointer',
+      border: '2px solid ' + (!noHomologado ? 'var(--mac-green)' : 'var(--line)'),
+      background: !noHomologado ? '#ecfdf5' : '#fff'
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 20,
+      marginBottom: 6
+    }
+  }, "✅"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      fontWeight: 800,
+      color: !noHomologado ? 'var(--mac-green)' : '#475569'
+    }
+  }, "Ya entrego en GRG homologado"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: '#94a3b8',
+      marginTop: 3
+    }
+  }, "Sin trasvase ni suministro")), /*#__PURE__*/React.createElement("button", {
+    onClick: () => setNoHom(true),
+    style: {
+      textAlign: 'left',
+      padding: '14px',
+      borderRadius: 12,
+      cursor: 'pointer',
+      border: '2px solid ' + (noHomologado ? 'var(--amber)' : 'var(--line)'),
+      background: noHomologado ? '#fffbeb' : '#fff'
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 20,
+      marginBottom: 6
+    }
+  }, "🛢️"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      fontWeight: 800,
+      color: noHomologado ? '#b45309' : '#475569'
+    }
+  }, "Entrego en bidones / no homologado"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: '#94a3b8',
+      marginTop: 3
+    }
+  }, "Añadimos GRG + trasvase"))), noHomologado && /*#__PURE__*/React.createElement("div", {
+    className: "fade-in"
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: '#f1f5f4',
+      borderRadius: 12,
+      padding: 14
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      marginBottom: 10
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      fontWeight: 700,
+      letterSpacing: .5,
+      color: '#475569'
+    }
+  }, "📦 INVENTARIO DE CARGA"), /*#__PURE__*/React.createElement("button", {
+    onClick: addLinea,
+    style: {
+      width: 28,
+      height: 28,
+      borderRadius: 8,
+      border: 'none',
+      background: 'var(--mac-green)',
+      color: '#fff',
+      fontSize: 18,
+      cursor: 'pointer',
+      lineHeight: 1
+    }
+  }, "+")), lineas.map((l, i) => /*#__PURE__*/React.createElement("div", {
+    key: i,
+    style: {
+      display: 'grid',
+      gridTemplateColumns: '70px 1fr 90px 30px',
+      gap: 8,
+      marginBottom: 8,
+      alignItems: 'center'
+    }
+  }, /*#__PURE__*/React.createElement(Field, {
+    label: "CANT.",
+    val: l.cant,
+    onChange: v => setLinea(i, 'cant', v)
+  }), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 9,
+      fontWeight: 700,
+      color: '#94a3b8',
+      marginBottom: 3
+    }
+  }, "ENVASE"), /*#__PURE__*/React.createElement("input", {
+    value: l.envase,
+    onChange: e => setLinea(i, 'envase', e.target.value),
+    style: inp
+  })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 9,
+      fontWeight: 700,
+      color: '#94a3b8',
+      marginBottom: 3
+    }
+  }, "KG/UNIDAD"), /*#__PURE__*/React.createElement("input", {
+    type: "number",
+    value: l.kg,
+    onChange: e => setLinea(i, 'kg', e.target.value),
+    style: inp
+  })), /*#__PURE__*/React.createElement("button", {
+    onClick: () => delLinea(i),
+    style: {
+      border: 'none',
+      background: 'none',
+      cursor: 'pointer',
+      fontSize: 16,
+      color: '#94a3b8',
+      paddingTop: 14
+    }
+  }, "🗑️"))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 14,
+      paddingTop: 14,
+      borderTop: '1px solid #dde3e1',
+      display: 'flex',
+      gap: 24
+    }
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      fontWeight: 700,
+      color: '#94a3b8'
+    }
+  }, "PESO TOTAL"), /*#__PURE__*/React.createElement("div", {
+    className: "mono",
+    style: {
+      fontSize: 20,
+      fontWeight: 700,
+      color: 'var(--mac-green)'
+    }
+  }, num(pesoAsist), " TN")), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      fontWeight: 700,
+      color: '#94a3b8'
+    }
+  }, "Nº ENVASES"), /*#__PURE__*/React.createElement("div", {
+    className: "mono",
+    style: {
+      fontSize: 20,
+      fontWeight: 700,
+      color: '#475569'
+    }
+  }, totalEnvases)))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: 'grid',
+      gridTemplateColumns: '1fr 1fr',
+      gap: 10,
+      marginTop: 12
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: '#fffbeb',
+      border: '1px solid #fde68a',
+      borderRadius: 12,
+      padding: 14
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      fontWeight: 800,
+      letterSpacing: .5,
+      color: '#b45309',
+      marginBottom: 4
+    }
+  }, "📦 SUMINISTRO GRG UN:31HA1"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: 'flex',
+      alignItems: 'baseline',
+      gap: 6
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "mono",
+    style: {
+      fontSize: 24,
+      fontWeight: 700,
+      color: '#b45309'
+    }
+  }, grgUds), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 12,
+      color: '#92400e',
+      fontWeight: 600
+    }
+  }, "ud × ", eur(T.grg).replace(' €', ''), "€")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10.5,
+      color: '#a16207',
+      marginTop: 4
+    }
+  }, "1 GRG por cada ", num(T.grgCapacidadTN), " TN · IVA 21%"), /*#__PURE__*/React.createElement("div", {
+    className: "mono",
+    style: {
+      fontSize: 14,
+      fontWeight: 700,
+      color: '#b45309',
+      marginTop: 6
+    }
+  }, eur(baseGrg))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: '#eff6ff',
+      border: '1px solid #bfdbfe',
+      borderRadius: 12,
+      padding: 14
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      fontWeight: 800,
+      letterSpacing: .5,
+      color: '#1d4ed8',
+      marginBottom: 4
+    }
+  }, "📥 TRASVASE A GRG"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: 'flex',
+      alignItems: 'baseline',
+      gap: 6
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "mono",
+    style: {
+      fontSize: 24,
+      fontWeight: 700,
+      color: 'var(--mac-blue)'
+    }
+  }, num(tramosTrasvase)), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 12,
+      color: '#1e40af',
+      fontWeight: 600
+    }
+  }, "TN × ", T.trasvase, "€")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10.5,
+      color: '#2563eb',
+      marginTop: 4
+    }
+  }, "Tramos de ", num(T.trasvaseTramo), " TN (al alza) · IVA 10%"), /*#__PURE__*/React.createElement("div", {
+    className: "mono",
+    style: {
+      fontSize: 14,
+      fontWeight: 700,
+      color: 'var(--mac-blue)',
+      marginTop: 6
+    }
+  }, eur(baseTrasvase)))))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: 'grid',
+      gridTemplateColumns: '1fr',
+      gap: 18
+    },
+    className: "duo"
+  }, /*#__PURE__*/React.createElement("style", null, `@media(min-width:640px){.duo{grid-template-columns:1fr 1fr !important}}`), /*#__PURE__*/React.createElement(Card, null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: 'flex',
+      alignItems: 'center',
+      gap: 8,
+      marginBottom: 14
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 18
+    }
+  }, "⚖️"), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 12.5,
+      fontWeight: 800,
+      letterSpacing: .5
+    }
+  }, "PESO TOTAL DEL RESIDUO (TN)")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: 'flex',
+      alignItems: 'baseline',
+      gap: 10,
+      marginBottom: 6
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "mono",
+    style: {
+      fontSize: 34,
+      fontWeight: 700
+    }
+  }, num(pesoTNef)), /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: 'var(--muted)',
+      fontWeight: 600
+    }
+  }, "TN"), /*#__PURE__*/React.createElement("span", {
+    style: {
+      marginLeft: 'auto',
+      background: '#ecfdf5',
+      color: '#065f46',
+      fontSize: 10,
+      fontWeight: 700,
+      padding: '4px 8px',
+      borderRadius: 6
+    }
+  }, "TARIFA: ", eur(T.tratamiento).replace(' €', ''), "€/TN (SIN IVA)")), asistMandaPeso ? /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: '#ecfdf5',
+      border: '1px solid #a7f3d0',
+      borderRadius: 8,
+      padding: '9px 11px',
+      marginTop: 8,
+      fontSize: 11.5,
+      color: '#065f46',
+      lineHeight: 1.5
+    }
+  }, "⚡ Peso calculado automáticamente desde el ", /*#__PURE__*/React.createElement("b", null, "inventario de carga"), " (", totalEnvases, " envases). Cambia a \"Ya entrego en GRG homologado\" para introducirlo a mano.") : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("input", {
+    type: "range",
+    min: "0.1",
+    max: "25",
+    step: "0.1",
+    value: pesoTN,
+    onChange: e => setPesoTN(Number(e.target.value)),
+    style: {
+      width: '100%',
+      marginTop: 8
+    }
+  }), /*#__PURE__*/React.createElement("input", {
+    type: "number",
+    value: pesoTN,
+    step: "0.1",
+    min: "0",
+    onChange: e => setPesoTN(Number(e.target.value) || 0),
+    style: {
+      ...inp,
+      marginTop: 12
+    }
+  }))), /*#__PURE__*/React.createElement(Card, null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      marginBottom: 14
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: 'flex',
+      alignItems: 'center',
+      gap: 8
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 18
+    }
+  }, "🚚"), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 12.5,
+      fontWeight: 800,
+      letterSpacing: .5
+    }
+  }, "LOGÍSTICA A PLANTA")), /*#__PURE__*/React.createElement("span", {
+    style: {
+      background: '#eff6ff',
+      color: '#1d4ed8',
+      fontSize: 10,
+      fontWeight: 700,
+      padding: '4px 8px',
+      borderRadius: 6
+    }
+  }, "TARIFA: ", T.logistica, "€/TN (SIN IVA)")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: '#eff6ff',
+      borderRadius: 10,
+      padding: 14
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      fontWeight: 700,
+      color: '#1e40af',
+      marginBottom: 4
+    }
+  }, "BASE IMPONIBLE (SIN IVA):"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: 'flex',
+      alignItems: 'baseline',
+      justifyContent: 'space-between'
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "mono",
+    style: {
+      fontSize: 26,
+      fontWeight: 700,
+      color: 'var(--mac-blue)'
+    }
+  }, eur(baseLogistica)), /*#__PURE__*/React.createElement("span", {
+    className: "mono",
+    style: {
+      fontSize: 11,
+      color: '#64748b'
+    }
+  }, num(pesoTNef), " TN × ", T.logistica, "€"))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 9.5,
+      color: '#94a3b8',
+      fontWeight: 600,
+      marginTop: 10,
+      lineHeight: 1.5
+    }
+  }, "TARIFA DE PROVEEDOR EXTERNO A FECHA ENERO 2026 SUJETO A CAMBIOS DE PRECIO DE GASOLINA"))), /*#__PURE__*/React.createElement(Card, null, /*#__PURE__*/React.createElement(Head, {
+    icon: "📄",
+    title: "TRAMITACIÓN LEGAL",
+    right: /*#__PURE__*/React.createElement("label", {
+      style: {
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+        cursor: 'pointer',
+        fontSize: 11,
+        fontWeight: 700,
+        color: 'var(--muted)'
+      }
+    }, /*#__PURE__*/React.createElement("input", {
+      type: "checkbox",
+      checked: docAnual,
+      onChange: e => setDocAnual(e.target.checked),
+      style: {
+        width: 16,
+        height: 16,
+        accentColor: 'var(--mac-green)'
+      }
+    }), "AÑADIR CUOTA ANUAL (PAGO ANUAL)")
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: 'var(--panel)',
+      borderRadius: 14,
+      padding: '20px 22px',
+      marginTop: 6,
+      opacity: docAnual ? 1 : .55
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "mono",
+    style: {
+      fontSize: 11,
+      fontWeight: 700,
+      letterSpacing: 1.5,
+      color: 'var(--mac-green-light)'
+    }
+  }, "GESTIÓN TÉCNICA Y DOCUMENTAL"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 22,
+      fontWeight: 800,
+      color: '#fff',
+      marginTop: 6
+    }
+  }, "Documentación Anual Obligatoria"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: '#94a3b8',
+      marginTop: 4
+    }
+  }, "(En el caso de que sea primera entrega del año)"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 14
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "mono",
+    style: {
+      fontSize: 34,
+      fontWeight: 700,
+      color: '#fff'
+    }
+  }, num(T.documentacion)), /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: 'var(--mac-green-light)',
+      fontWeight: 700,
+      marginLeft: 4
+    }
+  }, "€"))))), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      position: 'sticky',
+      top: 20,
+      background: 'var(--panel)',
+      borderRadius: 18,
+      padding: 22,
+      boxShadow: '0 18px 40px rgba(13,22,38,.25)'
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      marginBottom: 4
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "mono",
+    style: {
+      fontSize: 11,
+      fontWeight: 600,
+      letterSpacing: 1,
+      color: 'var(--mac-green-light)'
+    }
+  }, "📅 TARIFAS VIGENTES 2026"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      width: 30,
+      height: 30,
+      borderRadius: 8,
+      background: '#1a2740',
+      display: 'grid',
+      placeItems: 'center',
+      color: '#64748b'
+    }
+  }, "▦")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 24,
+      fontWeight: 800,
+      color: '#fff',
+      marginBottom: 14
+    }
+  }, "GESTIÓN ", /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: 'var(--mac-green-light)'
+    }
+  }, "PASTA")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: '#3a1518',
+      border: '1px solid #7f1d1d',
+      color: '#fca5a5',
+      fontSize: 11,
+      fontWeight: 700,
+      textAlign: 'center',
+      padding: '8px',
+      borderRadius: 8,
+      letterSpacing: .5,
+      marginBottom: 16
+    }
+  }, "PRESUPUESTO ESTIMADO · SUJETO A VALIDACIÓN"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: '#0a1322',
+      borderRadius: 14,
+      padding: 18,
+      marginBottom: 16
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      fontWeight: 700,
+      letterSpacing: 1,
+      color: '#64748b',
+      marginBottom: 6
+    }
+  }, "TOTAL BASE (SIN IVA)"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: 'flex',
+      alignItems: 'baseline',
+      gap: 4
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "mono",
+    style: {
+      fontSize: 38,
+      fontWeight: 700,
+      color: '#fff'
+    }
+  }, num(baseTotal)), /*#__PURE__*/React.createElement("span", {
+    className: "mono",
+    style: {
+      fontSize: 20,
+      color: 'var(--mac-green-light)',
+      fontWeight: 700
+    }
+  }, "€"))), /*#__PURE__*/React.createElement(Line, {
+    ic: "⚖️",
+    label: "TRATAMIENTO DE RESIDUO",
+    det: `${num(pesoTNef)} TN × ${eur(T.tratamiento).replace(' €', '')}€`,
+    val: baseTratamiento,
+    tag: "IVA 10%"
+  }), /*#__PURE__*/React.createElement(Line, {
+    ic: "🚚",
+    label: "LOGÍSTICA A PLANTA",
+    det: `${num(pesoTNef)} TN × ${T.logistica}€/TN`,
+    val: baseLogistica,
+    tag: "IVA 10%"
+  }), noHomologado && baseTrasvase > 0 && /*#__PURE__*/React.createElement(Line, {
+    ic: "📥",
+    label: "TRASVASE A GRG",
+    det: `${num(tramosTrasvase)} TN × ${T.trasvase}€`,
+    val: baseTrasvase,
+    tag: "IVA 10%"
+  }), noHomologado && baseGrg > 0 && /*#__PURE__*/React.createElement(Line, {
+    ic: "📦",
+    label: "SUMINISTRO GRG",
+    det: `${grgUds} ud × ${eur(T.grg).replace(' €', '')}€`,
+    val: baseGrg,
+    tag: "IVA 21%",
+    amber: true
+  }), docAnual && /*#__PURE__*/React.createElement(Line, {
+    ic: "📄",
+    label: "DOCUMENTACIÓN ANUAL",
+    det: "1ª entrega del año",
+    val: baseDoc,
+    tag: "IVA 10%"
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      borderTop: '1px solid #1e2a40',
+      margin: '12px 0',
+      paddingTop: 12
+    }
+  }, /*#__PURE__*/React.createElement(Row, {
+    label: "Base imponible al 10%",
+    val: eur(baseServicios)
+  }), /*#__PURE__*/React.createElement(Row, {
+    label: "IVA 10%",
+    val: '+' + eur(ivaServ),
+    green: true
+  }), baseGrgTotal > 0 && /*#__PURE__*/React.createElement(Row, {
+    label: "Base imponible al 21% (GRG)",
+    val: eur(baseGrgTotal)
+  }), baseGrgTotal > 0 && /*#__PURE__*/React.createElement(Row, {
+    label: "IVA 21%",
+    val: '+' + eur(ivaGrg),
+    green: true
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      marginBottom: 16
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 13,
+      fontWeight: 700,
+      color: 'var(--mac-green-light)'
+    }
+  }, "TOTAL OFERTA (IVA INCL.)"), /*#__PURE__*/React.createElement("span", {
+    className: "mono",
+    style: {
+      fontSize: 18,
+      fontWeight: 700,
+      color: 'var(--mac-green-light)'
+    }
+  }, eur(totalConIva))), /*#__PURE__*/React.createElement("button", {
+    onClick: descargarPDF,
+    className: "no-print",
+    style: {
+      width: '100%',
+      background: 'var(--mac-green-light)',
+      color: '#04261a',
+      border: 'none',
+      borderRadius: 12,
+      padding: '14px',
+      fontSize: 13,
+      fontWeight: 800,
+      letterSpacing: .5,
+      cursor: 'pointer',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      gap: 8
+    }
+  }, "⬇ DESCARGAR OFERTA ESTIMADA"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11.5,
+      color: '#94a3b8',
+      lineHeight: 1.6,
+      marginTop: 14
+    }
+  }, "✉️ Enviar esta oferta a ", /*#__PURE__*/React.createElement("a", {
+    href: 'mailto:' + T.emailValidacion,
+    style: {
+      color: 'var(--mac-green-light)',
+      fontWeight: 700
+    }
+  }, T.emailValidacion), " para validación final."), /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: '#3a1518',
+      border: '1px solid #7f1d1d',
+      borderRadius: 10,
+      padding: '10px 12px',
+      marginTop: 14
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      fontWeight: 700,
+      color: '#fca5a5',
+      letterSpacing: .5,
+      marginBottom: 3
+    }
+  }, "⚠ AVISO SOBRE TARIFAS EXTERNAS"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10.5,
+      color: '#cbb0b0',
+      lineHeight: 1.5
+    }
+  }, "El precio final puede variar si la planta incineradora realiza subidas de tarifas no previstas."))))), /*#__PURE__*/React.createElement("footer", {
+    style: {
+      textAlign: 'center',
+      fontSize: 11,
+      color: '#94a3b8',
+      fontWeight: 600,
+      letterSpacing: .5,
+      padding: '10px 0 30px'
+    }
+  }, "© 2026 MEDIOAMBIENTE CASTRO SLU · GESTOR DE RESIDUOS PELIGROSOS")));
+}
+const inp = {
+  width: '100%',
+  padding: '9px 10px',
+  border: '1px solid var(--line)',
+  borderRadius: 8,
+  fontSize: 13,
+  fontFamily: 'Space Grotesk',
+  background: '#fff',
+  outline: 'none'
+};
+const Card = ({
+  children
+}) => /*#__PURE__*/React.createElement("div", {
+  style: {
+    background: 'var(--card)',
+    border: '1px solid var(--line)',
+    borderRadius: 16,
+    padding: 20
+  }
+}, children);
+const Head = ({
+  icon,
+  title,
+  sub,
+  right
+}) => /*#__PURE__*/React.createElement("div", {
+  style: {
+    display: 'flex',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    marginBottom: 14,
+    gap: 12
+  }
+}, /*#__PURE__*/React.createElement("div", {
+  style: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 10
+  }
+}, /*#__PURE__*/React.createElement("span", {
+  style: {
+    fontSize: 18
+  }
+}, icon), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+  style: {
+    fontSize: 13,
+    fontWeight: 800,
+    letterSpacing: .5,
+    color: 'var(--mac-green)'
+  }
+}, title), sub && /*#__PURE__*/React.createElement("div", {
+  style: {
+    fontSize: 9.5,
+    fontWeight: 700,
+    color: '#94a3b8',
+    marginTop: 2
+  }
+}, sub))), /*#__PURE__*/React.createElement("div", null, right));
+const Field = ({
+  label,
+  val,
+  onChange
+}) => /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+  style: {
+    fontSize: 9,
+    fontWeight: 700,
+    color: '#94a3b8',
+    marginBottom: 3
+  }
+}, label), /*#__PURE__*/React.createElement("input", {
+  type: "number",
+  value: val,
+  onChange: e => onChange(e.target.value),
+  style: inp
+}));
+const Line = ({
+  ic,
+  label,
+  det,
+  val,
+  tag,
+  amber
+}) => /*#__PURE__*/React.createElement("div", {
+  style: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 10,
+    padding: '8px 0'
+  }
+}, /*#__PURE__*/React.createElement("div", {
+  style: {
+    width: 30,
+    height: 30,
+    borderRadius: 8,
+    background: '#1a2740',
+    display: 'grid',
+    placeItems: 'center',
+    fontSize: 14,
+    flexShrink: 0
+  }
+}, ic), /*#__PURE__*/React.createElement("div", {
+  style: {
+    flex: 1,
+    minWidth: 0
+  }
+}, /*#__PURE__*/React.createElement("div", {
+  style: {
+    fontSize: 10,
+    fontWeight: 700,
+    color: '#94a3b8',
+    letterSpacing: .3
+  }
+}, label, " ", tag && /*#__PURE__*/React.createElement("span", {
+  style: {
+    background: amber ? '#3a2a10' : '#0f2e22',
+    color: amber ? '#fbbf24' : '#34d399',
+    fontSize: 8,
+    padding: '1px 5px',
+    borderRadius: 4,
+    marginLeft: 4,
+    whiteSpace: 'nowrap'
+  }
+}, tag)), /*#__PURE__*/React.createElement("div", {
+  className: "mono",
+  style: {
+    fontSize: 11,
+    color: '#cbd5e1'
+  }
+}, det)), /*#__PURE__*/React.createElement("div", {
+  className: "mono",
+  style: {
+    fontSize: 13,
+    fontWeight: 700,
+    color: amber ? '#fbbf24' : '#fff',
+    flexShrink: 0
+  }
+}, eur(val)));
+const Row = ({
+  label,
+  val,
+  green
+}) => /*#__PURE__*/React.createElement("div", {
+  style: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    fontSize: 11.5,
+    padding: '3px 0'
+  }
+}, /*#__PURE__*/React.createElement("span", {
+  style: {
+    color: '#94a3b8',
+    fontWeight: 600
+  }
+}, label), /*#__PURE__*/React.createElement("span", {
+  className: "mono",
+  style: {
+    color: green ? 'var(--mac-green-light)' : '#cbd5e1',
+    fontWeight: 700
+  }
+}, val));
+ReactDOM.createRoot(document.getElementById('root')).render(/*#__PURE__*/React.createElement(App, null));
+</script>
+</body>
+</html>
